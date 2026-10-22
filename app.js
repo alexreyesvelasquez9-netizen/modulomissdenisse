@@ -154,8 +154,9 @@ app.get('/api/viviendas/:id/estado-cuenta', verificarToken, async (req, res) => 
   }
 });
 
-// Inicialización del servidor puerto 3000
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor API REST de Cuotify corriendo en el puerto ${PORT}`);
+const PORT = process.env.PORT || 8100;
+const HOST = process.env.IP || '::'; // Importante: escucha en IPv6 para Alwaysdata
+
+app.listen(PORT, HOST, () => {
+  console.log(`Servidor API REST corriendo en http://[${HOST}]:${PORT}`);
 });
