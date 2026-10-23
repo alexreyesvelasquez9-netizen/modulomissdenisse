@@ -14,7 +14,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('./db');
-const { verificarToken, soloAdministrador, registrarBitacora } = require('../middlewares/auth');
+const { verificarToken, soloAdministrador, registrarBitacora } = require('./auth');
 
 // Subconsulta: total pagado (no anulado) por cuota
 const SQL_PAGOS_POR_CUOTA = `
