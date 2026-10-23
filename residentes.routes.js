@@ -11,7 +11,7 @@ const pool = require('./db');
 const {
   verificarToken, soloAdministrador, registrarBitacora,
   generarClaveTemporal, esCorreoValido
-} = require('../middlewares/auth');
+} = require('./auth');
 
 // ==========================================
 // LISTAR RESIDENTES (con su vivienda si la tiene vinculada)
