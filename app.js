@@ -1,162 +1,98 @@
+// ==========================================
+// CUOTIFY - API REST principal (Node.js + Express)
+// ==========================================
+// Endpoints expuestos:
+//  POST /api/auth/registro            -> registra comunidad + administrador (PÚBLICO, RF-01)
+//  POST /api/auth/login               -> inicia sesión (PÚBLICO, RF-02)
+//  POST /api/auth/cambiar-clave       -> cambia contraseña propia (RF-03)
+//  GET  /api/health                   -> verificación de que la API está viva
+//
+//  Administrador:
+//  GET/POST/PUT /api/viviendas        -> gestión de viviendas (RF-04)
+//  GET/POST/PUT /api/conceptos        -> gestión de conceptos (RF-06)
+//  GET/POST     /api/residentes       -> gestión de residentes (RF-05)
+//  POST /api/residentes/:id/restablecer-clave (RF-05)
+//  POST /api/cuotas/generar           -> generación masiva (RF-07)
+//  GET  /api/cuotas                   -> listado con filtros (RF-12)
+//  POST /api/pagos                    -> registrar pago (RF-08)
+//  POST /api/pagos/:id/anular         -> anular pago (RF-09)
+//  GET  /api/dashboard/resumen        -> morosidad para la gráfica
+//  GET  /api/deudores                 -> viviendas en mora (RF-13)
+//  GET  /api/solventes                -> viviendas al día
+//  GET/POST /api/recordatorios(/enviar)-> recordatorios (RF-14)
+//  GET  /api/reportes?mes=&anio=      -> reportes (RF-15)
+//  GET  /api/bitacora                 -> trazabilidad (RF-17)
+//
+//  Residente:
+//  GET  /api/residente/cuotas         -> solo SUS cuotas (RF-11, RF-16)
+//  GET  /api/viviendas/:id/estado-cuenta -> solo SU vivienda (RF-16)
+// ==========================================
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-const pool = require('./config/db');
-const { verificarToken, soloAdministrador } = require('./middlewares/auth');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
-// Importación de las rutas modulares
-const cuotasRoutes = require('./routes/cuotas.routes');
+const authRoutes = require('./auth.routes');
+const catalogoRoutes = require('./catalogo.routes');
+const residentesRoutes = require('./residentes.routes');
+const cuotasRoutes = require('./cuotas.routes');
+const pagosRoutes = require('./pagos.routes');
+const adminRoutes = require('./admin.routes');
 
 const app = express();
+
+// ---------- Seguridad general (RNF-03 / RNF-04) ----------
+app.use(helmet());            // encabezados HTTP seguros
+app.use(cors());              // permite la versión web (GitHub Pages) y el APK
 app.use(express.json());
-app.use(cors());
 
-const JWT_SECRET = process.env.JWT_SECRET || 'secreto_super_seguro';
+// Límite general: 300 peticiones por minuto por IP
+const limiterGeneral = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Demasiadas peticiones. Espere un momento e intente de nuevo.' }
+});
+app.use('/api', limiterGeneral);
 
-// ==========================================
-// ENDPOINT: LOGIN (Autenticación)
-// ==========================================
-app.post('/api/auth/login', async (req, res) => {
-  try {
-    const { correo, contrasena } = req.body;
-    const [rows] = await pool.query('SELECT * FROM usuario WHERE correo = ? AND activo = TRUE', [correo]);
-    
-    if (rows.length === 0) return res.status(401).json({ message: 'Credenciales inválidas.' });
-    
-    const usuario = rows[0];
-    const passwordMatch = await bcrypt.compare(contrasena, usuario.contrasena_hash);
-    
-    if (!passwordMatch) {
-      return res.status(401).json({ message: 'Credenciales inválidas.' });
-    }
+// Límite estricto para el login: 20 intentos cada 5 minutos por IP
+const limiterLogin = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Demasiados intentos de ingreso. Espere 5 minutos.' }
+});
+app.use('/api/auth/login', limiterLogin);
 
-    // Generar token JWT con vigencia
-    const token = jwt.sign(
-      { id_usuario: usuario.id_usuario, id_comunidad: usuario.id_comunidad, rol: usuario.rol },
-      JWT_SECRET,
-      { expiresIn: '8h' }
-    );
+// ---------- Rutas modulares ----------
+app.use('/api/auth', authRoutes);        // registro, login, cambiar-clave
+app.use('/api', catalogoRoutes);         // viviendas y conceptos
+app.use('/api', residentesRoutes);       // residentes
+app.use('/api', cuotasRoutes);           // cuotas + estado de cuenta del residente
+app.use('/api', pagosRoutes);            // pagos + estado de cuenta por vivienda
+app.use('/api', adminRoutes);            // panel, deudores, solventes, reportes, bitácora
 
-    res.json({
-      token,
-      usuario: {
-        id_usuario: usuario.id_usuario,
-        nombre_completo: usuario.nombre_completo,
-        correo: usuario.correo,
-        rol: usuario.rol,
-        debe_cambiar_clave: usuario.debe_cambiar_clave
-      }
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error interno del servidor', error: error.message });
-  }
+// ---------- Verificación de vida (útil para Render) ----------
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', sistema: 'Cuotify API', hora: new Date().toISOString() });
 });
 
-// ==========================================
-// ENDPOINT: CAMBIAR CONTRASEÑA
-// ==========================================
-app.post('/api/auth/cambiar-clave', verificarToken, async (req, res) => {
-  try {
-    const { clave_nueva } = req.body;
-    const salt = await bcrypt.genSalt(10);
-    const hash = await bcrypt.hash(clave_nueva, salt);
-
-    await pool.query(
-      'UPDATE usuario SET contrasena_hash = ?, debe_cambiar_clave = FALSE WHERE id_usuario = ?',
-      [hash, req.usuario.id_usuario]
-    );
-
-    res.json({ mensaje: 'Contraseña actualizada exitosamente.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Error al cambiar la contraseña', error: error.message });
-  }
+// ---------- Manejador de rutas inexistentes ----------
+app.use((req, res) => {
+  res.status(404).json({ message: 'Ruta no encontrada.' });
 });
 
-// ==========================================
-// REGISTRO DE RUTAS MODULARES
-// ==========================================
-// Todas las peticiones a /api/cuotas serán manejadas por cuotas.routes.js
-app.use('/api/cuotas', cuotasRoutes);
-
-// ==========================================
-// ENDPOINT: REGISTRAR PAGO Y RECIBO
-// ==========================================
-app.post('/api/pagos', verificarToken, soloAdministrador, async (req, res) => {
-  try {
-    const { id_cuota, monto_pagado, metodo, referencia } = req.body;
-    
-    if (monto_pagado <= 0) {
-      return res.status(422).json({ message: 'El monto pagado debe ser mayor a 0.' });
-    }
-
-    const numero_recibo = `REC-${new Date().toISOString().slice(0,7).replace('-','')}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    const [result] = await pool.query(
-      `INSERT INTO pago (id_cuota, monto_pagado, fecha_pago, metodo, referencia, numero_recibo, id_registrado_por, anulado)
-       VALUES (?, ?, NOW(), ?, ?, ?, ?, FALSE)`,
-      [id_cuota, monto_pagado, metodo, referencia || null, numero_recibo, req.usuario.id_usuario]
-    );
-
-    res.status(201).json({
-      id_pago: result.insertId,
-      numero_recibo,
-      mensaje: 'Pago registrado correctamente.'
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error al registrar el pago', error: error.message });
-  }
+// ---------- Manejador global de errores ----------
+app.use((error, req, res, next) => {
+  console.error('Error no controlado:', error.message);
+  res.status(500).json({ message: 'Error interno del servidor', error: error.message });
 });
 
-// ==========================================
-// ENDPOINT: ANULAR PAGO
-// ==========================================
-app.post('/api/pagos/:id/anular', verificarToken, soloAdministrador, async (req, res) => {
-  try {
-    const { motivo_anulacion } = req.body;
-    const idPago = req.params.id;
-
-    await pool.query(
-      'UPDATE pago SET anulado = TRUE, motivo_anulacion = ? WHERE id_pago = ?',
-      [motivo_anulacion, idPago]
-    );
-
-    res.json({ mensaje: 'Pago anulado correctamente. La trazabilidad se ha conservado.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Error al anular el pago', error: error.message });
-  }
-});
-
-// ==========================================
-// ENDPOINT: ESTADO DE CUENTA
-// ==========================================
-app.get('/api/viviendas/:id/estado-cuenta', verificarToken, async (req, res) => {
-  try {
-    const idVivienda = req.params.id;
-
-    const [viviendaRows] = await pool.query('SELECT * FROM vivienda WHERE id_vivienda = ?', [idVivienda]);
-    if (viviendaRows.length === 0) return res.status(404).json({ message: 'Vivienda no encontrada.' });
-
-    const [cuotas] = await pool.query(
-      `SELECT c.id_cuota, cc.nombre AS concepto, c.periodo, c.monto, c.fecha_vencimiento 
-       FROM cuota c
-       JOIN concepto_cuota cc ON c.id_concepto = cc.id_concepto
-       WHERE c.id_vivienda = ? ORDER BY c.periodo DESC`,
-      [idVivienda]
-    );
-
-    res.json({
-      vivienda: viviendaRows[0],
-      historial_cuotas: cuotas
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error al consultar el estado de cuenta', error: error.message });
-  }
-});
-
-const PORT = process.env.PORT || 8100;
-const HOST = process.env.IP || '::'; // Importante: escucha en IPv6 para Alwaysdata
-
-app.listen(PORT, HOST, () => {
-  console.log(`Servidor API REST corriendo en http://[${HOST}]:${PORT}`);
+// ---------- Arranque del servidor ----------
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Servidor API REST de Cuotify corriendo en el puerto ${PORT}`);
 });
