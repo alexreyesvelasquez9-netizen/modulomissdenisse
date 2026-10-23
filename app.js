@@ -1,6 +1,32 @@
 // ==========================================
 // CUOTIFY - API REST principal (Node.js + Express)
 // ==========================================
+// Endpoints expuestos:
+//  POST /api/auth/registro            -> registra comunidad + administrador (PÚBLICO, RF-01)
+//  POST /api/auth/login               -> inicia sesión (PÚBLICO, RF-02)
+//  POST /api/auth/cambiar-clave       -> cambia contraseña propia (RF-03)
+//  GET  /api/health                   -> verificación de que la API está viva
+//
+//  Administrador:
+//  GET/POST/PUT /api/viviendas        -> gestión de viviendas (RF-04)
+//  GET/POST/PUT /api/conceptos        -> gestión de conceptos (RF-06)
+//  GET/POST     /api/residentes       -> gestión de residentes (RF-05)
+//  POST /api/residentes/:id/restablecer-clave (RF-05)
+//  POST /api/cuotas/generar           -> generación masiva (RF-07)
+//  GET  /api/cuotas                   -> listado con filtros (RF-12)
+//  POST /api/pagos                    -> registrar pago (RF-08)
+//  POST /api/pagos/:id/anular         -> anular pago (RF-09)
+//  GET  /api/dashboard/resumen        -> morosidad para la gráfica
+//  GET  /api/deudores                 -> viviendas en mora (RF-13)
+//  GET  /api/solventes                -> viviendas al día
+//  GET/POST /api/recordatorios(/enviar)-> recordatorios (RF-14)
+//  GET  /api/reportes?mes=&anio=      -> reportes (RF-15)
+//  GET  /api/bitacora                 -> trazabilidad (RF-17)
+//
+//  Residente:
+//  GET  /api/residente/cuotas         -> solo SUS cuotas (RF-11, RF-16)
+//  GET  /api/viviendas/:id/estado-cuenta -> solo SU vivienda (RF-16)
+// ==========================================
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -16,12 +42,12 @@ const adminRoutes = require('./admin.routes');
 
 const app = express();
 
-// ---------- Seguridad general ----------
-app.use(helmet());            
-app.use(cors());              
+// ---------- Seguridad general (RNF-03 / RNF-04) ----------
+app.use(helmet());            // encabezados HTTP seguros
+app.use(cors());              // permite la versión web (GitHub Pages) y el APK
 app.use(express.json());
 
-// Límite general: 300 peticiones por minuto por IP (aplicado a todas las rutas)
+// Límite general: 300 peticiones por minuto por IP
 const limiterGeneral = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
@@ -29,7 +55,7 @@ const limiterGeneral = rateLimit({
   legacyHeaders: false,
   message: { message: 'Demasiadas peticiones. Espere un momento e intente de nuevo.' }
 });
-app.use(limiterGeneral);
+app.use('/api', limiterGeneral);
 
 // Límite estricto para el login: 20 intentos cada 5 minutos por IP
 const limiterLogin = rateLimit({
@@ -39,18 +65,18 @@ const limiterLogin = rateLimit({
   legacyHeaders: false,
   message: { message: 'Demasiados intentos de ingreso. Espere 5 minutos.' }
 });
-app.use('/auth/login', limiterLogin);
+app.use('/api/auth/login', limiterLogin);
 
-// ---------- Rutas modulares (SIN /api) ----------
-app.use('/auth', authRoutes);       // /auth/login, /auth/registro, /auth/cambiar-clave
-app.use('/', catalogoRoutes);        // /viviendas, /conceptos
-app.use('/', residentesRoutes);      // /residentes
-app.use('/', cuotasRoutes);          // /cuotas, /residente/cuotas
-app.use('/', pagosRoutes);           // /pagos
-app.use('/', adminRoutes);           // /dashboard/resumen, /deudores, /solventes, etc.
+// ---------- Rutas modulares ----------
+app.use('/api/auth', authRoutes);        // registro, login, cambiar-clave
+app.use('/api', catalogoRoutes);         // viviendas y conceptos
+app.use('/api', residentesRoutes);       // residentes
+app.use('/api', cuotasRoutes);           // cuotas + estado de cuenta del residente
+app.use('/api', pagosRoutes);            // pagos + estado de cuenta por vivienda
+app.use('/api', adminRoutes);            // panel, deudores, solventes, reportes, bitácora
 
-// ---------- Verificación de vida ----------
-app.get(['/health', '/api/health'], (req, res) => {
+// ---------- Verificación de vida (útil para Render) ----------
+app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', sistema: 'Cuotify API', hora: new Date().toISOString() });
 });
 
