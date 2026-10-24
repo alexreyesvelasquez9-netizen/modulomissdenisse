@@ -1,8 +1,5 @@
 // ==========================================
 // CUOTIFY - Rutas de residentes (montadas en /api)
-//  GET  /api/residentes                        -> listar residentes (RF-05)
-//  POST /api/residentes                        -> crear residente con vivienda
-//  POST /api/residentes/:id/restablecer-clave  -> clave temporal (RF-05)
 // ==========================================
 const express = require('express');
 const bcrypt = require('bcrypt');
@@ -14,7 +11,7 @@ const {
 } = require('./auth');
 
 // ==========================================
-// LISTAR RESIDENTES (con su vivienda si la tiene vinculada)
+// LISTAR RESIDENTES
 // ==========================================
 router.get('/residentes', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -35,37 +32,33 @@ router.get('/residentes', verificarToken, soloAdministrador, async (req, res) =>
 
 // ==========================================
 // CREAR RESIDENTE (RF-05)
-// Crea el usuario residente con clave temporal y lo vincula a la
-// vivienda indicada; si la vivienda no existe, la crea primero.
-// Devuelve la clave temporal para que el administrador la entregue.
 // ==========================================
 router.post('/residentes', verificarToken, soloAdministrador, async (req, res) => {
+  const nombre = (req.body?.nombre_completo || '').trim();
+  const correo = (req.body?.correo || '').trim().toLowerCase();
+  const telefono = (req.body?.telefono || '').trim();
+  const viviendaNombre = (req.body?.vivienda || '').trim();
+
+  // Validaciones antes de obtener conexión
+  if (!nombre) return res.status(422).json({ message: 'El nombre completo es obligatorio.' });
+  if (!esCorreoValido(correo)) return res.status(422).json({ message: 'Ingrese un correo válido.' });
+  if (!viviendaNombre) {
+    return res.status(422).json({ message: 'Indique la vivienda del residente (ej. Casa 1).' });
+  }
+
+  const [existe] = await pool.query('SELECT id_usuario FROM usuario WHERE correo = ?', [correo]);
+  if (existe.length > 0) {
+    return res.status(409).json({ message: 'Ese correo ya está registrado.' });
+  }
+
+  const claveTemporal = generarClaveTemporal();
+  const salt = await bcrypt.genSalt(10);
+  const hash = await bcrypt.hash(claveTemporal, salt);
+
   const connection = await pool.getConnection();
   try {
-    const nombre = (req.body?.nombre_completo || '').trim();
-    const correo = (req.body?.correo || '').trim().toLowerCase();
-    const telefono = (req.body?.telefono || '').trim();
-    const viviendaNombre = (req.body?.vivienda || '').trim();
-
-    if (!nombre) return res.status(422).json({ message: 'El nombre completo es obligatorio.' });
-    if (!esCorreoValido(correo)) return res.status(422).json({ message: 'Ingrese un correo válido.' });
-    if (!viviendaNombre) {
-      return res.status(422).json({ message: 'Indique la vivienda del residente (ej. Casa 1).' });
-    }
-
-    const [existe] = await pool.query('SELECT id_usuario FROM usuario WHERE correo = ?', [correo]);
-    if (existe.length > 0) {
-      connection.release();
-      return res.status(409).json({ message: 'Ese correo ya está registrado.' });
-    }
-
-    const claveTemporal = generarClaveTemporal();
-    const salt = await bcrypt.genSalt(10);
-    const hash = await bcrypt.hash(claveTemporal, salt);
-
     await connection.beginTransaction();
 
-    // 1) Crear el usuario residente (debe cambiar su clave en el primer ingreso)
     const [usuarioResult] = await connection.query(
       `INSERT INTO usuario (id_comunidad, nombre_completo, correo, telefono, contrasena_hash, rol, debe_cambiar_clave)
        VALUES (?, ?, ?, ?, ?, 'residente', TRUE)`,
@@ -73,7 +66,6 @@ router.post('/residentes', verificarToken, soloAdministrador, async (req, res) =
     );
     const idUsuario = usuarioResult.insertId;
 
-    // 2) Buscar o crear la vivienda dentro de la MISMA comunidad
     let [viviendaRows] = await connection.query(
       'SELECT id_vivienda FROM vivienda WHERE id_comunidad = ? AND identificador = ?',
       [req.usuario.id_comunidad, viviendaNombre]
@@ -89,7 +81,6 @@ router.post('/residentes', verificarToken, soloAdministrador, async (req, res) =
       idVivienda = nuevaVivienda.insertId;
     }
 
-    // 3) Vincular residente -> vivienda
     await connection.query(
       'UPDATE vivienda SET id_responsable = ? WHERE id_vivienda = ?',
       [idUsuario, idVivienda]
@@ -119,13 +110,11 @@ router.post('/residentes', verificarToken, soloAdministrador, async (req, res) =
 
 // ==========================================
 // RESTABLECER CLAVE DE UN RESIDENTE (RF-05)
-// Genera una clave temporal nueva y la devuelve en la respuesta.
 // ==========================================
 router.post('/residentes/:id/restablecer-clave', verificarToken, soloAdministrador, async (req, res) => {
   try {
     const idResidente = req.params.id;
 
-    // Verificar que el residente pertenece a la comunidad del administrador
     const [rows] = await pool.query(
       `SELECT id_usuario, nombre_completo FROM usuario
        WHERE id_usuario = ? AND id_comunidad = ? AND rol = 'residente'`,
