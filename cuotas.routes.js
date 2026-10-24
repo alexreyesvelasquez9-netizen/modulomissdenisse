@@ -1,12 +1,5 @@
 // ==========================================
 // CUOTIFY - Rutas de cuotas (montadas en /api)
-//  POST /api/cuotas/generar    -> generación masiva del mes (RF-07)
-//  GET  /api/cuotas            -> listar con filtros y paginación (RF-12)
-//  GET  /api/residente/cuotas  -> estado de cuenta del residente (RF-11, RF-16)
-//
-// CONTRATO CORREGIDO: ahora acepta AMBOS formatos:
-//   { "mes": 10, "anio": 2026 }               <- formato que envía la app Flutter
-//   { "periodo": "2026-10-01", "fecha_vencimiento": "2026-10-31" } <- formato antiguo
 // ==========================================
 const express = require('express');
 const router = express.Router();
@@ -30,43 +23,36 @@ const SQL_ESTADO = `
 
 // ==========================================
 // GENERAR CUOTAS DEL MES (RF-07 / P-04)
-// Crea una cuota por cada vivienda activa x concepto activo.
-// Transacción + UNIQUE: si se ejecuta dos veces, no duplica.
 // ==========================================
 router.post('/cuotas/generar', verificarToken, soloAdministrador, async (req, res) => {
+  const { mes, anio, periodo, fecha_vencimiento } = req.body || {};
+
+  let periodoSQL = null;
+  let vencimientoSQL = null;
+
+  // Validaciones antes de obtener la conexión
+  if (mes && anio) {
+    const mesNum = parseInt(mes, 10);
+    const anioNum = parseInt(anio, 10);
+    if (mesNum < 1 || mesNum > 12) {
+      return res.status(422).json({ message: 'El mes debe estar entre 1 y 12.' });
+    }
+    if (anioNum < 2000 || anioNum > 2100) {
+      return res.status(422).json({ message: 'El año no es válido.' });
+    }
+    periodoSQL = `${anioNum}-${String(mesNum).padStart(2, '0')}-01`;
+    vencimientoSQL = `${anioNum}-${String(mesNum).padStart(2, '0')}-${new Date(Date.UTC(anioNum, mesNum, 0)).getUTCDate()}`;
+  } else if (periodo) {
+    periodoSQL = periodo;
+    vencimientoSQL = fecha_vencimiento || periodo;
+  } else {
+    return res.status(422).json({ message: 'Debe enviar mes y año (o un periodo). Ejemplo: { "mes": 10, "anio": 2026 }' });
+  }
+
   const connection = await pool.getConnection();
   try {
-    const { mes, anio, periodo, fecha_vencimiento } = req.body || {};
-
-    // Determinar el periodo (primer día del mes) y el vencimiento
-    let periodoSQL = null;
-    let vencimientoSQL = null;
-
-    if (mes && anio) {
-      const mesNum = parseInt(mes, 10);
-      const anioNum = parseInt(anio, 10);
-      if (mesNum < 1 || mesNum > 12) {
-        connection.release();
-        return res.status(422).json({ message: 'El mes debe estar entre 1 y 12.' });
-      }
-      if (anioNum < 2000 || anioNum > 2100) {
-        connection.release();
-        return res.status(422).json({ message: 'El año no es válido.' });
-      }
-      periodoSQL = `${anioNum}-${String(mesNum).padStart(2, '0')}-01`;
-      // Último día del mes como vencimiento por defecto
-      vencimientoSQL = `${anioNum}-${String(mesNum).padStart(2, '0')}-${new Date(Date.UTC(anioNum, mesNum, 0)).getUTCDate()}`;
-    } else if (periodo) {
-      periodoSQL = periodo;                    // formato antiguo '2026-10-01'
-      vencimientoSQL = fecha_vencimiento || periodo;
-    } else {
-      connection.release();
-      return res.status(422).json({ message: 'Debe enviar mes y año (o un periodo). Ejemplo: { "mes": 10, "anio": 2026 }' });
-    }
-
     await connection.beginTransaction();
 
-    // Viviendas y conceptos activos de ESTA comunidad
     const [viviendas] = await connection.query(
       'SELECT id_vivienda FROM vivienda WHERE id_comunidad = ? AND activa = TRUE',
       [req.usuario.id_comunidad]
@@ -98,7 +84,7 @@ router.post('/cuotas/generar', verificarToken, soloAdministrador, async (req, re
           cuotasCreadas++;
         } catch (err) {
           if (err.code === 'ER_DUP_ENTRY') {
-            duplicadas++; // Ya existía: se omite sin romper el proceso (P-04)
+            duplicadas++;
           } else {
             throw err;
           }
@@ -130,8 +116,6 @@ router.post('/cuotas/generar', verificarToken, soloAdministrador, async (req, re
 
 // ==========================================
 // LISTAR CUOTAS CON FILTROS (RF-12)
-// Filtros: ?mes=10&anio=2026&id_vivienda=&id_concepto=&estado=Pagado
-// Paginación: ?pagina=1&limite=20 (RNF-02)
 // ==========================================
 router.get('/cuotas', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -140,7 +124,6 @@ router.get('/cuotas', verificarToken, soloAdministrador, async (req, res) => {
     if (limite < 1) limite = 20;
     if (limite > 100) limite = 100;
 
-    // Consulta base (siempre filtrada por la comunidad del token)
     let sqlBase = `
       SELECT c.id_cuota, cc.nombre AS descripcion, c.periodo, c.monto, c.fecha_vencimiento,
              v.identificador AS vivienda, COALESCE(p.pagado, 0) AS pagado,
@@ -158,7 +141,6 @@ router.get('/cuotas', verificarToken, soloAdministrador, async (req, res) => {
     if (req.query.id_vivienda) { sqlBase += ' AND c.id_vivienda = ?'; params.push(parseInt(req.query.id_vivienda, 10)); }
     if (req.query.id_concepto) { sqlBase += ' AND c.id_concepto = ?'; params.push(parseInt(req.query.id_concepto, 10)); }
 
-    // El filtro por estado se aplica sobre el resultado calculado
     let sql = `SELECT * FROM (${sqlBase}) AS resultado`;
     if (req.query.estado) {
       sql += ' WHERE estado = ?';
@@ -176,11 +158,9 @@ router.get('/cuotas', verificarToken, soloAdministrador, async (req, res) => {
 
 // ==========================================
 // ESTADO DE CUENTA DEL RESIDENTE (RF-11 + RF-16)
-// Devuelve SOLO las cuotas de la vivienda del residente autenticado.
 // ==========================================
 router.get('/residente/cuotas', verificarToken, async (req, res) => {
   try {
-    // RF-16: el residente solo puede ver SU vivienda
     const [viviendaRows] = await pool.query(
       'SELECT id_vivienda FROM vivienda WHERE id_responsable = ? AND activa = TRUE',
       [req.usuario.id_usuario]
