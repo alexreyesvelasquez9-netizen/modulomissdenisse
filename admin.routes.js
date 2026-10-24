@@ -1,12 +1,5 @@
 // ==========================================
 // CUOTIFY - Rutas del panel, mora, recordatorios y reportes (montadas en /api)
-//  GET  /api/dashboard/resumen     -> { solventes, deudores, total_viviendas }
-//  GET  /api/deudores              -> viviendas en mora (RF-13)
-//  GET  /api/solventes             -> viviendas al día
-//  GET  /api/recordatorios         -> viviendas con deuda para notificar (RF-14)
-//  POST /api/recordatorios/enviar  -> registra el recordatorio enviado (RF-14)
-//  GET  /api/reportes?mes=&anio=   -> recaudo/estado por periodo (RF-15)
-//  GET  /api/bitacora              -> últimas acciones críticas (RF-17)
 // ==========================================
 const express = require('express');
 const router = express.Router();
@@ -33,14 +26,18 @@ const SQL_VIVIENDAS_EN_MORA = `
 // ==========================================
 router.get('/dashboard/resumen', verificarToken, soloAdministrador, async (req, res) => {
   try {
-    const [[{ total }]] = await pool.query(
+    const [totalRows] = await pool.query(
       'SELECT COUNT(*) AS total FROM vivienda WHERE id_comunidad = ? AND activa = TRUE',
       [req.usuario.id_comunidad]
     );
-    const [[{ deudores }]] = await pool.query(
+    const [deudoresRows] = await pool.query(
       `SELECT COUNT(*) AS deudores FROM (${SQL_VIVIENDAS_EN_MORA}) AS en_mora`,
       [req.usuario.id_comunidad]
     );
+
+    const total = totalRows[0]?.total || 0;
+    const deudores = deudoresRows[0]?.deudores || 0;
+
     res.json({
       total_viviendas: total,
       deudores: deudores,
@@ -53,7 +50,6 @@ router.get('/dashboard/resumen', verificarToken, soloAdministrador, async (req, 
 
 // ==========================================
 // LISTADO DE DEUDORES (RF-13)
-// [{ id_vivienda, vivienda, propietario, meses_adeudados, deuda }]
 // ==========================================
 router.get('/deudores', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -80,7 +76,6 @@ router.get('/deudores', verificarToken, soloAdministrador, async (req, res) => {
 
 // ==========================================
 // LISTADO DE SOLVENTES (viviendas al día)
-// [{ id_vivienda, vivienda, propietario, monto }] (monto pagado este mes)
 // ==========================================
 router.get('/solventes', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -135,8 +130,7 @@ router.get('/recordatorios', verificarToken, soloAdministrador, async (req, res)
 });
 
 // ==========================================
-// ENVIAR RECORDATORIO (registro interno dentro de la app, RF-14)
-// Body: { id_vivienda }
+// ENVIAR RECORDATORIO (RF-14)
 // ==========================================
 router.post('/recordatorios/enviar', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -170,7 +164,6 @@ router.post('/recordatorios/enviar', verificarToken, soloAdministrador, async (r
 
 // ==========================================
 // REPORTES POR PERIODO (RF-15)
-// ?mes=10&anio=2026 -> [{ vivienda, propietario, monto, estado }]
 // ==========================================
 router.get('/reportes', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -201,7 +194,7 @@ router.get('/reportes', verificarToken, soloAdministrador, async (req, res) => {
 });
 
 // ==========================================
-// BITÁCORA (RF-17) - últimas 100 acciones de la comunidad
+// BITÁCORA (RF-17)
 // ==========================================
 router.get('/bitacora', verificarToken, soloAdministrador, async (req, res) => {
   try {
