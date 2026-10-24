@@ -1,15 +1,26 @@
 // ==========================================
 // CUOTIFY - Conexión a MySQL (pool de conexiones)
-// Lee la configuración desde el archivo .env
-// ==========================================
-// - MySQL local:      DB_PORT=3306  y  DB_SSL=false
-// - TiDB Cloud:       DB_PORT=4000  y  DB_SSL=true
-// - Aiven for MySQL:  DB_PORT=<el del panel>  y  DB_SSL=true
 // ==========================================
 const mysql = require('mysql2/promise');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const usaSSL = process.env.DB_SSL === 'true';
+
+let sslOptions = undefined;
+if (usaSSL) {
+  sslOptions = {
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: process.env.DB_REJECT_UNAUTHORIZED !== 'false'
+  };
+
+  // Si existe el certificado ISRG Root X1 en la carpeta raíz, lo carga automáticamente
+  const certPath = path.join(__dirname, 'isrgrootx1.pem');
+  if (fs.existsSync(certPath)) {
+    sslOptions.ca = fs.readFileSync(certPath);
+  }
+}
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -17,9 +28,7 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   port: Number(process.env.DB_PORT) || 3306,
-  ...(usaSSL
-    ? { ssl: { minVersion: 'TLSv1.2', rejectUnauthorized: true } }
-    : {}),
+  ...(sslOptions ? { ssl: sslOptions } : {}),
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
