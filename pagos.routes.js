@@ -1,15 +1,5 @@
 // ==========================================
 // CUOTIFY - Rutas de pagos y estado de cuenta (montadas en /api)
-//  POST /api/pagos                       -> registrar pago (RF-08)
-//  POST /api/pagos/:id/anular            -> anular pago con motivo (RF-09)
-//  GET  /api/viviendas/:id/estado-cuenta -> estado de cuenta (RF-11, RF-16)
-//
-// Mejoras respecto a la versión anterior:
-//  - Recibo correlativo real: REC-2026-000001 (basado en id_pago)
-//  - Valida que el pago no exceda el saldo (prueba P-05 -> 422)
-//  - Verifica que la cuota/pago pertenezca a la comunidad del token (RNF-05)
-//  - El residente solo consulta el estado de cuenta de SU vivienda (P-10)
-//  - Registra bitácora en cada acción crítica (RF-17)
 // ==========================================
 const express = require('express');
 const router = express.Router();
@@ -32,28 +22,26 @@ const SQL_ESTADO = `
 
 // ==========================================
 // REGISTRAR PAGO (RF-08)
-// Body: { id_cuota, monto_pagado, metodo, referencia }
-// metodo: 'efectivo' | 'transferencia' | 'otro'
 // ==========================================
 router.post('/pagos', verificarToken, soloAdministrador, async (req, res) => {
+  const idCuota = parseInt(req.body?.id_cuota, 10);
+  const montoPagado = parseFloat(req.body?.monto_pagado);
+  const metodo = (req.body?.metodo || 'efectivo').toLowerCase();
+  const referencia = (req.body?.referencia || '').trim();
+
+  // Validaciones antes de abrir conexión
+  if (!idCuota) return res.status(422).json({ message: 'Falta el identificador de la cuota.' });
+  if (isNaN(montoPagado) || montoPagado <= 0) {
+    return res.status(422).json({ message: 'El monto pagado debe ser mayor a 0.' });
+  }
+  if (!['efectivo', 'transferencia', 'otro'].includes(metodo)) {
+    return res.status(422).json({ message: "El método debe ser 'efectivo', 'transferencia' u 'otro'." });
+  }
+
   const connection = await pool.getConnection();
   try {
-    const idCuota = parseInt(req.body?.id_cuota, 10);
-    const montoPagado = parseFloat(req.body?.monto_pagado);
-    const metodo = (req.body?.metodo || 'efectivo').toLowerCase();
-    const referencia = (req.body?.referencia || '').trim();
-
-    if (!idCuota) return res.status(422).json({ message: 'Falta el identificador de la cuota.' });
-    if (isNaN(montoPagado) || montoPagado <= 0) {
-      return res.status(422).json({ message: 'El monto pagado debe ser mayor a 0.' });
-    }
-    if (!['efectivo', 'transferencia', 'otro'].includes(metodo)) {
-      return res.status(422).json({ message: "El método debe ser 'efectivo', 'transferencia' u 'otro'." });
-    }
-
     await connection.beginTransaction();
 
-    // La cuota debe pertenecer a una vivienda de ESTA comunidad (RNF-05)
     const [cuotaRows] = await connection.query(
       `SELECT c.id_cuota, c.monto, COALESCE(p.pagado, 0) AS pagado
        FROM cuota c
@@ -72,7 +60,6 @@ router.post('/pagos', verificarToken, soloAdministrador, async (req, res) => {
     const cuota = cuotaRows[0];
     const saldo = parseFloat(cuota.monto) - parseFloat(cuota.pagado);
 
-    // P-05: no se acepta un pago mayor que el saldo pendiente
     if (montoPagado > saldo + 0.001) {
       await connection.rollback();
       connection.release();
@@ -81,21 +68,18 @@ router.post('/pagos', verificarToken, soloAdministrador, async (req, res) => {
       });
     }
 
-    // Si ya estaba pagada completa, no aceptar más pagos
     if (saldo <= 0.001) {
       await connection.rollback();
       connection.release();
       return res.status(422).json({ message: 'Esta cuota ya está completamente pagada.' });
     }
 
-    // Registrar el pago (recibo provisional; se vuelve correlativo abajo)
     const [result] = await connection.query(
       `INSERT INTO pago (id_cuota, monto_pagado, fecha_pago, metodo, referencia, numero_recibo, id_registrado_por, anulado)
        VALUES (?, ?, NOW(), ?, ?, NULL, ?, FALSE)`,
       [idCuota, montoPagado, metodo, referencia || null, req.usuario.id_usuario]
     );
 
-    // Número de recibo CORRELATIVO (RF-10): REC-AÑO-000123 según id_pago
     const numeroRecibo = `REC-${new Date().getFullYear()}-${String(result.insertId).padStart(6, '0')}`;
     await connection.query(
       'UPDATE pago SET numero_recibo = ? WHERE id_pago = ?',
@@ -124,8 +108,7 @@ router.post('/pagos', verificarToken, soloAdministrador, async (req, res) => {
 });
 
 // ==========================================
-// ANULAR PAGO (RF-09) - nunca se borra, conserva trazabilidad (RNF-06)
-// Body: { motivo_anulacion }
+// ANULAR PAGO (RF-09)
 // ==========================================
 router.post('/pagos/:id/anular', verificarToken, soloAdministrador, async (req, res) => {
   try {
@@ -136,7 +119,6 @@ router.post('/pagos/:id/anular', verificarToken, soloAdministrador, async (req, 
       return res.status(422).json({ message: 'Indique el motivo de la anulación.' });
     }
 
-    // Verificar que el pago pertenece a la comunidad del administrador
     const [rows] = await pool.query(
       `SELECT pa.id_pago FROM pago pa
        JOIN cuota c ON c.id_cuota = pa.id_cuota
@@ -163,8 +145,6 @@ router.post('/pagos/:id/anular', verificarToken, soloAdministrador, async (req, 
 
 // ==========================================
 // ESTADO DE CUENTA DE UNA VIVIENDA (RF-11)
-// - Administrador: cualquier vivienda de su comunidad.
-// - Residente: SOLO su propia vivienda (RF-16 / P-10).
 // ==========================================
 router.get('/viviendas/:id/estado-cuenta', verificarToken, async (req, res) => {
   try {
@@ -180,7 +160,6 @@ router.get('/viviendas/:id/estado-cuenta', verificarToken, async (req, res) => {
 
     const vivienda = viviendaRows[0];
 
-    // RNF-05 / RF-16: validar comunidad y propiedad
     if (req.usuario.rol === 'administrador') {
       if (vivienda.id_comunidad !== req.usuario.id_comunidad) {
         return res.status(403).json({ message: 'La vivienda pertenece a otra comunidad.' });
