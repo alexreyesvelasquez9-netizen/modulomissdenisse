@@ -16,15 +16,25 @@ const adminRoutes = require('./admin.routes');
 
 const app = express();
 
-// Indicar a Express que confíe en el proxy inverso (necesario en Render)
+// Indicar a Express que confíe en el proxy inverso de Render
 app.set('trust proxy', 1);
 
-// ---------- Seguridad general ----------
-app.use(helmet());
-app.use(cors());
+// ---------- Seguridad y CORS ----------
+// Desactivamos crossOriginResourcePolicy para que Flutter Web / Navegadores no bloqueen la respuesta
+app.use(helmet({
+  crossOriginResourcePolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
+
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(express.json());
 
-// Límite general: 300 peticiones por minuto por IP
+// Límite general
 const limiterGeneral = rateLimit({
   windowMs: 60 * 1000,
   max: 300,
@@ -34,7 +44,7 @@ const limiterGeneral = rateLimit({
 });
 app.use('/api', limiterGeneral);
 
-// Límite estricto para el login: 20 intentos cada 5 minutos por IP
+// Límite login
 const limiterLogin = rateLimit({
   windowMs: 5 * 60 * 1000,
   max: 20,
@@ -44,6 +54,16 @@ const limiterLogin = rateLimit({
 });
 app.use('/api/auth/login', limiterLogin);
 
+// ---------- Verificación de vida (soporta múltiples variantes que usan las apps) ----------
+const respuestaHealth = (req, res) => {
+  res.json({ status: 'ok', sistema: 'Cuotify API', hora: new Date().toISOString() });
+};
+
+app.get('/', respuestaHealth);
+app.get('/health', respuestaHealth);
+app.get('/api', respuestaHealth);
+app.get('/api/health', respuestaHealth);
+
 // ---------- Rutas modulares ----------
 app.use('/api/auth', authRoutes);
 app.use('/api', catalogoRoutes);
@@ -51,11 +71,6 @@ app.use('/api', residentesRoutes);
 app.use('/api', cuotasRoutes);
 app.use('/api', pagosRoutes);
 app.use('/api', adminRoutes);
-
-// ---------- Verificación de vida ----------
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', sistema: 'Cuotify API', hora: new Date().toISOString() });
-});
 
 // ---------- Manejador de rutas inexistentes ----------
 app.use((req, res) => {
