@@ -16,21 +16,26 @@ const adminRoutes = require('./admin.routes');
 
 const app = express();
 
-// Indicar a Express que confíe en el proxy inverso de Render
+// Indicar a Express que confíe en el proxy inverso de Render (indispensable para rate-limit)
 app.set('trust proxy', 1);
 
 // ---------- Seguridad y CORS ----------
-// Desactivamos crossOriginResourcePolicy para que Flutter Web / Navegadores no bloqueen la respuesta
+// Desactivamos restricciones de recursos cruzados en Helmet para que Flutter Web funcione sin bloqueos
 app.use(helmet({
   crossOriginResourcePolicy: false,
   crossOriginEmbedderPolicy: false
 }));
 
-app.use(cors({
+// Configuración unificada de CORS
+const corsOptions = {
   origin: '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
+};
+
+app.use(cors(corsOptions));
+// Atiende inmediatamente el sondeo preliminar (preflight) que hace el navegador en Flutter Web
+app.options('*', cors(corsOptions));
 
 app.use(express.json());
 
@@ -54,7 +59,7 @@ const limiterLogin = rateLimit({
 });
 app.use('/api/auth/login', limiterLogin);
 
-// ---------- Verificación de vida (soporta múltiples variantes que usan las apps) ----------
+// ---------- Verificación de vida (soporta múltiples variantes) ----------
 const respuestaHealth = (req, res) => {
   res.json({ status: 'ok', sistema: 'Cuotify API', hora: new Date().toISOString() });
 };
